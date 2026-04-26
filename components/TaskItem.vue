@@ -7,6 +7,13 @@
             <path fill-rule="evenodd" d="M3 6.75A.75.75 0 013.75 6h16.5a.75.75 0 010 1.5H3.75A.75.75 0 013 6.75zM3 12a.75.75 0 01.75-.75h16.5a.75.75 0 010 1.5H3.75A.75.75 0 013 12zm0 5.25a.75.75 0 01.75-.75h16.5a.75.75 0 010 1.5H3.75a.75.75 0 01-.75-.75z" clip-rule="evenodd" />
           </svg>
         </div>
+        <!-- 放大按鈕 -->
+        <button @click="$emit('expand', task)" class="icon-btn expand-btn" title="放大檢視">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+            <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>
+            <line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
+          </svg>
+        </button>
       </div>
       <div class="title-container">
         <span class="title">{{ task.title }}</span>
@@ -70,20 +77,17 @@
       </div>
 
       <div style="display:flex; gap:8px;">
-        <!-- ✅ 休息按鈕：依 phase 動態切換文字、icon、樣式 -->
         <button
           @click="$emit('toggle-rest', task)"
           class="control-btn secondary"
           :class="{ 'back-to-work': task.phase !== 'work' }"
           :title="restBtnLabel"
         >
-          <!-- 目前是工作 → 顯示「去休息」icon -->
           <template v-if="task.phase === 'work'">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="ctrl-icon">
               <path fill-rule="evenodd" d="M3 4.25A2.25 2.25 0 015.25 2h5.5A2.25 2.25 0 0113 4.25v2a2.25 2.25 0 01-2.25 2.25h-5.5A2.25 2.25 0 013 6.25v-2zM5.25 3a1.25 1.25 0 00-1.25 1.25v2c0 .69.56 1.25 1.25 1.25h5.5c.69 0 1.25-.56 1.25-1.25v-2A1.25 1.25 0 0010.75 3h-5.5zM16.25 2.5a.75.75 0 00-.75.75v3.5a.75.75 0 00.75.75h.5a3.5 3.5 0 100-7h-.5a.75.75 0 000 1.5h.5a2 2 0 110 4h-.5v-3.5zm-5.47 9.53a.75.75 0 00-1.06 0l-3 3a.75.75 0 101.06 1.06l1.72-1.72v5.38a.75.75 0 001.5 0v-5.38l1.72 1.72a.75.75 0 101.06-1.06l-3-3z" clip-rule="evenodd" />
             </svg>
           </template>
-          <!-- 目前是休息 → 顯示「返回」icon -->
           <template v-else>
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="ctrl-icon">
               <path fill-rule="evenodd" d="M7.793 2.232a.75.75 0 01-.025 1.06L3.622 7.25h10.003a5.375 5.375 0 010 10.75H10.75a.75.75 0 010-1.5h2.875a3.875 3.875 0 000-7.75H3.622l4.146 3.957a.75.75 0 01-1.036 1.085l-5.5-5.25a.75.75 0 010-1.085l5.5-5.25a.75.75 0 011.061.025z" clip-rule="evenodd" />
@@ -114,7 +118,7 @@ const props = defineProps({
   now: Number
 })
 
-const emit = defineEmits(['toggle', 'toggle-rest', 'edit', 'quick-edit', 'reset', 'delete'])
+const emit = defineEmits(['toggle', 'toggle-rest', 'edit', 'quick-edit', 'reset', 'delete', 'expand'])
 
 const formatTimeStr = (seconds) => {
   if (isNaN(seconds) || seconds < 0) seconds = 0
@@ -183,11 +187,9 @@ const dashOffset = computed(() => {
   }
 })
 
-// ✅ 休息按鈕文字邏輯
 const restBtnLabel = computed(() => {
   const t = props.task
   if (t.phase === 'work') return '休息'
-  // 在休息 phase 中
   if (t.is_running) return '結束'
   return '返回'
 })
@@ -222,6 +224,13 @@ const restBtnLabel = computed(() => {
   color: var(--text-muted);
   display: flex;
   align-items: center;
+}
+.expand-btn {
+  color: var(--text-muted);
+  padding: 4px;
+}
+.expand-btn:hover {
+  color: var(--primary-color);
 }
 .title-container {
   display: flex;
@@ -339,7 +348,6 @@ const restBtnLabel = computed(() => {
   border: 2px solid var(--border-color);
   color: var(--text-color);
 }
-/* 休息中時：休息按鈕改為藍色邊框提示「可返回」 */
 .control-btn.secondary.back-to-work {
   border-color: var(--rest-color);
   color: var(--rest-color);
