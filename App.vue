@@ -8,12 +8,10 @@
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path fill-rule="evenodd" d="M5.47 5.47a.75.75 0 011.06 0L12 10.94l5.47-5.47a.75.75 0 111.06 1.06L13.06 12l5.47 5.47a.75.75 0 11-1.06 1.06L12 13.06l-5.47 5.47a.75.75 0 01-1.06-1.06L10.94 12 5.47 6.53a.75.75 0 010-1.06z" clip-rule="evenodd" /></svg>
           </button>
         </div>
-
         <div style="display: flex; flex-direction: column; gap: 10px;">
           <input v-model="authForm.username" type="text" class="custom-input" placeholder="帳號" />
           <input v-model="authForm.password" type="password" class="custom-input" placeholder="密碼" @keyup.enter="handleLogin" />
         </div>
-
         <div style="display: flex; gap: 10px;">
           <button @click="handleLogin" class="primary-btn" :disabled="isAuthLoading">
             {{ isAuthLoading ? '處理中...' : '登入' }}
@@ -22,7 +20,6 @@
             註冊新帳號
           </button>
         </div>
-
         <div v-if="!isOfflineMode" style="text-align: center; margin-top: 10px; border-top: 1px solid var(--border-color); padding-top: 20px;">
           <button @click="enableGuestMode" class="action-btn" style="background: transparent; color: var(--text-color); border: 2px solid var(--border-color); width: 100%; justify-content: center;">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path fill-rule="evenodd" d="M11.47 2.47a.75.75 0 011.06 0l4.5 4.5a.75.75 0 01-1.06 1.06l-3.22-3.22V16.5a.75.75 0 01-1.5 0V4.81L8.03 8.03a.75.75 0 01-1.06-1.06l4.5-4.5zM3 15.75a.75.75 0 01.75.75v2.25a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5V16.5a.75.75 0 011.5 0v2.25a3 3 0 01-3 3H5.25a3 3 0 01-3-3V16.5a.75.75 0 01.75-.75z" clip-rule="evenodd" /></svg>
@@ -217,6 +214,19 @@ const colorPalette = [
   '#00BCD4','#8BC34A','#FFC107','#F44336','#3F51B5','#009688','#795548'
 ]
 
+// ─── 操作鎖：防止任何並發狀態切換 ─────────────────────────────────
+let _operationLock = false
+
+const withLock = async (fn) => {
+  if (_operationLock) return
+  _operationLock = true
+  try {
+    await fn()
+  } finally {
+    _operationLock = false
+  }
+}
+
 const enableGuestMode = () => { isOfflineMode.value = true; showLoginModal.value = false }
 
 const handleRegister = async () => {
@@ -248,13 +258,11 @@ const handleLogin = async () => {
     const params = new URLSearchParams()
     params.append('username', authForm.value.username)
     params.append('password', authForm.value.password)
-
     const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-App-Secure-Token': CF_HEADER },
       body: params
     })
-
     if (res.ok) {
       const data = await res.json()
       authToken.value = data.access_token
@@ -311,7 +319,6 @@ const getSplitLogs = (startTs, endTs) => {
 const loadTasks = async () => {
   const loaded = await db.tasks.orderBy('order_rank').toArray()
   const currentTime = Date.now()
-
   tasks.value = loaded.map(t => {
     if (!t.logs) t.logs = t.duration > 0 ? { [getDateStr(currentTime)]: t.duration } : {}
     if (t.cycle_elapsed === undefined) t.cycle_elapsed = t.duration || 0
@@ -321,7 +328,6 @@ const loadTasks = async () => {
     if (!t.long_rest_time) t.long_rest_time = 15 * 60
     if (t.pomodoro_cycle === undefined) t.pomodoro_cycle = 0
     if (t.is_deleted === undefined) t.is_deleted = false
-
     if (t.is_running && t.start_time) {
       if (t.updated_at && t.updated_at > t.start_time) {
         t.start_time = t.start_time + (currentTime - t.updated_at)
@@ -332,11 +338,11 @@ const loadTasks = async () => {
       t.is_running = false
       t.start_time = null
     }
-
     return t
   })
 }
 
+// ─── syncWithServer：只做後台同步，絕對不呼叫 loadTasks ──────────
 const syncWithServer = async () => {
   if (!isLoggedIn.value || !isOnline.value) return
   try {
@@ -357,7 +363,6 @@ const syncWithServer = async () => {
       cycle_elapsed: t.cycle_elapsed,
       rest_elapsed: t.rest_elapsed
     }))
-
     const res = await fetch(`${API_BASE_URL}/api/sync`, {
       method: 'POST',
       headers: {
@@ -367,7 +372,58 @@ const syncWithServer = async () => {
       },
       body: JSON.stringify({ tasks: payload })
     })
+    if (res.ok) {
+      lastSyncTime.value = Date.now()
+      // 後台同步成功後，更新 DB 中的伺服器資料（但不替換記憶體 tasks）
+      const data = await res.json()
+      const serverData = data.tasks.map(t => {
+        const localT = localTasks.find(lt => lt.id === t.id)
+        return {
+          ...t,
+          order_rank: localT ? localT.order_rank : String(Date.now()),
+          duration: t.duration !== undefined ? t.duration : (localT ? localT.duration : 0),
+          cycle_elapsed: t.cycle_elapsed !== undefined ? t.cycle_elapsed : (localT ? localT.cycle_elapsed : 0),
+          rest_elapsed: t.rest_elapsed !== undefined ? t.rest_elapsed : (localT ? localT.rest_elapsed : 0),
+          phase: t.phase || (localT ? localT.phase : 'work'),
+          pomodoro_cycle: t.pomodoro_cycle || (localT ? localT.pomodoro_cycle : 0),
+          is_running: t.is_running !== undefined ? t.is_running : (localT ? localT.is_running : false),
+          start_time: t.start_time !== undefined ? t.start_time : (localT ? localT.start_time : null),
+        }
+      })
+      await db.tasks.clear()
+      await db.tasks.bulkAdd(serverData)
+      // 注意：不呼叫 loadTasks()，記憶體狀態由操作函式直接維護
+    } else if (res.status === 401) {
+      alert('登入狀態已過期，請重新登入')
+      logout()
+    }
+  } catch (err) {
+    console.error('同步失敗', err)
+  }
+}
 
+// 首次登入後的完整同步（需要 loadTasks 拉取最新資料）
+const fullSyncWithServer = async () => {
+  if (!isLoggedIn.value || !isOnline.value) return
+  try {
+    const localTasks = await db.tasks.toArray()
+    const payload = localTasks.map(t => ({
+      id: t.id, title: t.title, mode: t.mode,
+      target_time: t.target_time, rest_time: t.rest_time, long_rest_time: t.long_rest_time,
+      logs: t.logs || {}, updated_at: t.updated_at || Date.now(),
+      is_deleted: !!t.is_deleted, is_running: !!t.is_running,
+      start_time: t.start_time, phase: t.phase,
+      cycle_elapsed: t.cycle_elapsed, rest_elapsed: t.rest_elapsed
+    }))
+    const res = await fetch(`${API_BASE_URL}/api/sync`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken.value}`,
+        'X-App-Secure-Token': CF_HEADER
+      },
+      body: JSON.stringify({ tasks: payload })
+    })
     if (res.ok) {
       const data = await res.json()
       const serverData = data.tasks.map(t => {
@@ -421,20 +477,28 @@ const getCurrentRestSeconds = (t) => {
   return (t.rest_elapsed || 0) + active
 }
 
-const saveToDbAndSync = async (t) => {
+// ─── saveToDb：只存 DB，不觸發 syncWithServer（由呼叫端控制 sync 時機）──
+const saveToDb = async (t) => {
   t.updated_at = Date.now()
   await db.tasks.put(JSON.parse(JSON.stringify(t)))
+}
+
+// ─── saveToDbAndSync：存 DB 並後台 sync（不 loadTasks）──────────
+const saveToDbAndSync = async (t) => {
+  await saveToDb(t)
   syncWithServer()
 }
 
-const updateTaskLogs = async (t, endTsOverride = null) => {
+// ─── commitTaskState：計算並更新計時數據到記憶體（不存 DB）─────────
+// 純粹在記憶體中把 start_time 計算進去後停止
+const commitTaskState = (t, endTsOverride = null) => {
   if (!t.is_running || !t.start_time) return
   let endTs = endTsOverride || Date.now()
 
   if (t.phase === 'work') {
-    if ((t.mode === 'countdown' || t.mode === 'pomodoro') && !endTsOverride) {
+    if (t.mode === 'countdown' || t.mode === 'pomodoro') {
       const rem = Math.max(0, (t.target_time || 0) - (t.cycle_elapsed || 0))
-      endTs = Math.min(endTs, t.start_time + rem * 1000)
+      if (!endTsOverride) endTs = Math.min(endTs, t.start_time + rem * 1000)
     }
     const split = getSplitLogs(t.start_time, endTs)
     t.logs = t.logs || {}
@@ -453,37 +517,50 @@ const updateTaskLogs = async (t, endTsOverride = null) => {
 
   t.is_running = false
   t.start_time = null
-  await saveToDbAndSync(t)
 }
 
+// ─── updateTaskLogs：計算並存 DB（仍保留供 handlePhaseComplete 使用）──
+const updateTaskLogs = async (t, endTsOverride = null) => {
+  commitTaskState(t, endTsOverride)
+  await saveToDb(t)
+}
+
+// ─── stopAllOthers：快照後批次停止，不觸發 loadTasks ─────────────
 const stopAllOthers = async (excludeId) => {
-  for (const t of tasks.value) {
-    if (t.is_running && t.id !== excludeId) await updateTaskLogs(t)
+  // 快照當前 running 的任務，避免 reactive 陣列迭代中途變動
+  const toStop = tasks.value.filter(t => t.is_running && t.id !== excludeId)
+  for (const t of toStop) {
+    commitTaskState(t)
+    await saveToDb(t)
   }
 }
 
-// 唯一性收斂：強制將其他休息中的任務退回待命
+// ─── enforceSingleRestTask：確保唯一休息方塊，批次操作 ─────────────
 const enforceSingleRestTask = async (activeRestId) => {
-  for (const t of tasks.value) {
-    if (t.id === activeRestId || t.is_deleted) continue
-    if (t.phase !== 'work') {
-      if (t.is_running && t.start_time) {
-        await updateTaskLogs(t)
-      }
-      t.phase = 'work'
-      t.rest_elapsed = 0
-      t.is_running = false
-      t.start_time = null
-      await saveToDbAndSync(t)
+  // 快照，避免迭代中途 reactive 陣列變動
+  const toReset = tasks.value.filter(t =>
+    t.id !== activeRestId &&
+    !t.is_deleted &&
+    t.phase !== 'work'
+  )
+  for (const t of toReset) {
+    // 如果還在計時，先結算
+    if (t.is_running && t.start_time) {
+      commitTaskState(t)
     }
+    t.phase = 'work'
+    t.rest_elapsed = 0
+    t.is_running = false
+    t.start_time = null
+    await saveToDb(t)
   }
 }
 
+// ─── handlePhaseComplete：倒數結束後的相位切換 ───────────────────
 let isHandlingPhase = false
 const handlePhaseComplete = async (t) => {
-  if (isHandlingPhase) return
+  if (isHandlingPhase || _operationLock) return
   isHandlingPhase = true
-
   try {
     const exactEnd = t.phase === 'work'
       ? t.start_time + ((t.target_time || 0) - (t.cycle_elapsed || 0)) * 1000
@@ -496,10 +573,7 @@ const handlePhaseComplete = async (t) => {
       msg += ' 專注完成！'
       t.cycle_elapsed = 0
       t.rest_elapsed = 0
-      
-      // 自動進入休息前，確保全局唯一休息方塊
       await enforceSingleRestTask(t.id)
-
       if (t.mode === 'pomodoro') {
         t.pomodoro_cycle = (t.pomodoro_cycle || 0) + 1
         t.phase = t.pomodoro_cycle >= 4 ? 'long_rest' : 'rest'
@@ -541,8 +615,8 @@ const addTask = async () => {
     updated_at: Date.now(),
     is_deleted: false
   }
-  await saveToDbAndSync(newTask)
   tasks.value.push(newTask)
+  await saveToDbAndSync(newTask)
   newTaskTitle.value = ''
 }
 
@@ -574,7 +648,7 @@ const onDragEnd = async () => {
   tasks.value.forEach((t, i) => {
     t.order_rank = String(i).padStart(5, '0')
     t.updated_at = Date.now()
-    db.tasks.put(t)
+    db.tasks.put(JSON.parse(JSON.stringify(t)))
   })
   syncWithServer()
 }
@@ -618,73 +692,68 @@ const openQuickEditModal = (t) => {
 const saveQuickEdit = async () => {
   const t = quickEditTask.value
   if (!t || quickEditMinutes.value <= 0) return
-
   const wasRunning = t.is_running
-  if (wasRunning) await updateTaskLogs(t)
-
+  if (wasRunning) commitTaskState(t)
   const newRemSeconds = quickEditMinutes.value * 60
-
   if (t.phase === 'work') {
     t.cycle_elapsed = Math.max(0, t.target_time - newRemSeconds)
   } else {
     const totalRest = t.phase === 'long_rest' ? t.long_rest_time : t.rest_time
     t.rest_elapsed = Math.max(0, totalRest - newRemSeconds)
   }
-
   if (wasRunning) {
     t.is_running = true
     t.start_time = Date.now()
     now.value = t.start_time
   }
-
   await saveToDbAndSync(t)
   quickEditTask.value = null
 }
 
+// ─── toggleTimer：開始/暫停工作計時 ─────────────────────────────
 const toggleTimer = async (targetTask) => {
-  initAudio()
-  if (notificationPermission.value === 'default') requestNotificationPermission()
-  lastActiveTaskId.value = targetTask.id
-  localStorage.setItem('lastActiveTaskId', targetTask.id)
+  await withLock(async () => {
+    initAudio()
+    if (notificationPermission.value === 'default') requestNotificationPermission()
+    lastActiveTaskId.value = targetTask.id
+    localStorage.setItem('lastActiveTaskId', targetTask.id)
 
-  if (targetTask.is_running) {
-    await updateTaskLogs(targetTask)
-  } else {
-    if (targetTask.phase === 'work' && targetTask.mode !== 'stopwatch') {
-      if ((targetTask.cycle_elapsed || 0) >= targetTask.target_time) return
-    } else if (targetTask.phase !== 'work') {
-      const tr = targetTask.phase === 'long_rest' ? targetTask.long_rest_time : targetTask.rest_time
-      if ((targetTask.rest_elapsed || 0) >= tr) return
+    if (targetTask.is_running) {
+      commitTaskState(targetTask)
+      await saveToDbAndSync(targetTask)
+    } else {
+      if (targetTask.phase === 'work' && targetTask.mode !== 'stopwatch') {
+        if ((targetTask.cycle_elapsed || 0) >= targetTask.target_time) return
+      } else if (targetTask.phase !== 'work') {
+        const tr = targetTask.phase === 'long_rest' ? targetTask.long_rest_time : targetTask.rest_time
+        if ((targetTask.rest_elapsed || 0) >= tr) return
+      }
+      await stopAllOthers(targetTask.id)
+      targetTask.is_running = true
+      targetTask.start_time = Date.now()
+      now.value = targetTask.start_time
+      await saveToDbAndSync(targetTask)
     }
-    await stopAllOthers(targetTask.id)
-    targetTask.is_running = true
-    targetTask.start_time = Date.now()
-    now.value = targetTask.start_time
-    await saveToDbAndSync(targetTask)
-  }
+  })
 }
 
-const isSwitchingRest = ref(false)
-
+// ─── toggleRest：切換休息狀態（核心修正點）──────────────────────
 const toggleRest = async (t) => {
-  if (isSwitchingRest.value) return
-  isSwitchingRest.value = true
-
-  try {
+  await withLock(async () => {
     initAudio()
     if (notificationPermission.value === 'default') requestNotificationPermission()
     lastActiveTaskId.value = t.id
     localStorage.setItem('lastActiveTaskId', t.id)
 
-    if (t.is_running) {
-      await updateTaskLogs(t)
-    }
-
-    await stopAllOthers(t.id)
-
     if (t.phase === 'work') {
-      // 確保手動進入休息前，清除其他休息狀態
+      // ── 進入休息 ──
+      // 1. 先把自己的工作計時結算
+      if (t.is_running) commitTaskState(t)
+      // 2. 停止所有其他正在計時的任務
+      await stopAllOthers(t.id)
+      // 3. 強制其他所有「休息中」任務退回 work（唯一性保證）
       await enforceSingleRestTask(t.id)
+      // 4. 切換自己進入休息並開始計時
       t.phase = 'rest'
       t.rest_elapsed = 0
       t.is_running = true
@@ -692,15 +761,16 @@ const toggleRest = async (t) => {
       now.value = t.start_time
       await saveToDbAndSync(t)
     } else {
+      // ── 退出休息（回到待命）──
+      // 只操作自己，不影響其他任務的計時狀態
+      if (t.is_running) commitTaskState(t)
       t.phase = 'work'
       t.rest_elapsed = 0
       t.is_running = false
       t.start_time = null
       await saveToDbAndSync(t)
     }
-  } finally {
-    isSwitchingRest.value = false
-  }
+  })
 }
 
 const resetAllTimes = async () => {
@@ -790,13 +860,10 @@ const getWeekDays = (weekStr) => {
   const [yearStr, weekNumStr] = weekStr.split('-W')
   const year = parseInt(yearStr, 10)
   const weekNum = parseInt(weekNumStr, 10)
-
   const jan4 = new Date(year, 0, 4)
   const dayOfJan4 = (jan4.getDay() + 6) % 7
   const firstMonday = new Date(year, 0, 4 - dayOfJan4)
-
   const targetMonday = new Date(firstMonday.getTime() + (weekNum - 1) * 7 * 86400000)
-
   const days = []
   for (let i = 0; i < 7; i++) {
     const d = new Date(targetMonday.getTime() + i * 86400000)
@@ -845,7 +912,6 @@ const removeLogsByMode = (logs) => {
 
 const processedTasks = computed(() => {
   const weekDays = statsMode.value === 'week' ? getWeekDays(selectedWeek.value) : []
-
   return activeTasks.value.map((task, i) => {
     const allLogs = { ...(task.logs || {}) }
     if (task.is_running && task.phase === 'work' && task.start_time) {
@@ -858,7 +924,6 @@ const processedTasks = computed(() => {
         allLogs[k] = (allLogs[k] || 0) + v
       }
     }
-
     let elapsed = 0
     if (statsMode.value === 'total') elapsed = Object.values(allLogs).reduce((a, b) => a + b, 0)
     else if (statsMode.value === 'day') elapsed = allLogs[selectedDate.value] || 0
@@ -869,7 +934,6 @@ const processedTasks = computed(() => {
     } else if (statsMode.value === 'week') {
       for (const d of weekDays) elapsed += (allLogs[d] || 0)
     }
-
     elapsed = Math.max(0, Math.floor(elapsed))
     return {
       ...task,
@@ -1006,7 +1070,7 @@ onMounted(async () => {
   await loadTasks()
 
   if (isLoggedIn.value) {
-    await syncWithServer()
+    await fullSyncWithServer()
   }
 
   const cd = new Date()
@@ -1028,8 +1092,7 @@ onMounted(async () => {
     now.value = Date.now()
     activeTasks.value.forEach(t => {
       if (!t.is_running) return
-      if (isHandlingPhase) return
-
+      if (isHandlingPhase || _operationLock) return
       if (t.phase === 'work' && t.mode !== 'stopwatch') {
         if ((t.target_time || 0) - getCurrentWorkSeconds(t) <= 0.1) handlePhaseComplete(t)
       } else if (t.phase === 'rest' || t.phase === 'long_rest') {
@@ -1050,7 +1113,6 @@ onUnmounted(() => clearInterval(timerInterval))
 </script>
 
 <style>
-/* CSS 變數定義 */
 :root {
   --bg-color: #f0f2f5;
   --text-color: #1a1a1a;
@@ -1108,9 +1170,7 @@ html, body {
   overflow-x: hidden;
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 #app {
   width: 100%;
@@ -1217,21 +1277,13 @@ html, body {
   transform: scale(1.1);
 }
 
-.theme-icon {
-  width: 28px;
-  height: 28px;
-}
+.theme-icon { width: 28px; height: 28px; }
 
-.dropdown-container {
-  position: relative;
-}
+.dropdown-container { position: relative; }
 
 .dropdown-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  top: 0; left: 0; right: 0; bottom: 0;
   z-index: 98;
 }
 
@@ -1267,22 +1319,11 @@ html, body {
   transition: background 0.2s, color 0.2s;
 }
 
-.dropdown-item:hover {
-  background: var(--icon-hover-bg);
-}
+.dropdown-item:hover { background: var(--icon-hover-bg); }
+.dropdown-item.warning:hover { color: #f59e0b; }
+.dropdown-item.danger:hover { color: var(--danger-color); }
 
-.dropdown-item.warning:hover {
-  color: #f59e0b;
-}
-
-.dropdown-item.danger:hover {
-  color: var(--danger-color);
-}
-
-.menu-icon {
-  width: 18px;
-  height: 18px;
-}
+.menu-icon { width: 18px; height: 18px; }
 
 .menu-divider {
   height: 1px;
@@ -1290,10 +1331,7 @@ html, body {
   margin: 4px 0;
 }
 
-.network-status {
-  font-size: 0.9em;
-  color: var(--text-muted);
-}
+.network-status { font-size: 0.9em; color: var(--text-muted); }
 
 .task-grid {
   display: grid;
@@ -1304,17 +1342,12 @@ html, body {
 }
 
 @media (max-width: 500px) {
-  .task-grid {
-    grid-template-columns: 1fr;
-    gap: 20px;
-  }
+  .task-grid { grid-template-columns: 1fr; gap: 20px; }
 }
 
 .bottom-actions {
   position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
+  bottom: 0; left: 0; right: 0;
   padding: 15px 20px;
   background: var(--bg-color);
   border-top: 1px solid var(--border-color);
@@ -1342,27 +1375,11 @@ html, body {
   transition: opacity 0.2s, transform 0.2s;
 }
 
-.action-btn svg, .primary-btn svg {
-  width: 20px;
-  height: 20px;
-}
-
-.primary-btn {
-  background: var(--primary-color);
-}
-
-.action-btn:hover, .primary-btn:hover {
-  opacity: 0.9;
-  transform: scale(1.02);
-}
-
-.action-btn.info {
-  background-color: #3b82f6;
-}
-
-.action-btn.danger {
-  background-color: var(--danger-color);
-}
+.action-btn svg, .primary-btn svg { width: 20px; height: 20px; }
+.primary-btn { background: var(--primary-color); }
+.action-btn:hover, .primary-btn:hover { opacity: 0.9; transform: scale(1.02); }
+.action-btn.info { background-color: #3b82f6; }
+.action-btn.danger { background-color: var(--danger-color); }
 
 .global-ctrl-btn {
   padding: 14px 20px;
@@ -1373,14 +1390,8 @@ html, body {
   color: white;
 }
 
-.global-ctrl-btn.pause {
-  background-color: var(--danger-color);
-}
-
-.global-ctrl-btn svg, .main-summary-btn svg {
-  width: 24px;
-  height: 24px;
-}
+.global-ctrl-btn.pause { background-color: var(--danger-color); }
+.global-ctrl-btn svg, .main-summary-btn svg { width: 24px; height: 24px; }
 
 .main-summary-btn {
   padding: 14px 30px;
@@ -1403,27 +1414,13 @@ html, body {
   justify-content: center;
 }
 
-.icon-btn:hover {
-  background: var(--icon-hover-bg);
-  color: var(--text-color);
-}
-
-.icon-btn.danger:hover {
-  background: rgba(239,68,68,0.1);
-  color: var(--danger-color);
-}
-
-.action-icon {
-  width: 18px;
-  height: 18px;
-}
+.icon-btn:hover { background: var(--icon-hover-bg); color: var(--text-color); }
+.icon-btn.danger:hover { background: rgba(239,68,68,0.1); color: var(--danger-color); }
+.action-icon { width: 18px; height: 18px; }
 
 .modal-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  top: 0; left: 0; right: 0; bottom: 0;
   background: rgba(0,0,0,0.6);
   backdrop-filter: blur(5px);
   display: flex;
@@ -1443,14 +1440,8 @@ html, body {
   scrollbar-color: var(--border-color) transparent;
 }
 
-.modal-content::-webkit-scrollbar {
-  width: 8px;
-}
-
-.modal-content::-webkit-scrollbar-thumb {
-  background-color: var(--border-color);
-  border-radius: 4px;
-}
+.modal-content::-webkit-scrollbar { width: 8px; }
+.modal-content::-webkit-scrollbar-thumb { background-color: var(--border-color); border-radius: 4px; }
 
 .modal-title {
   margin: 0 0 20px 0;
@@ -1463,11 +1454,7 @@ html, body {
   color: var(--text-color);
 }
 
-.modal-buttons {
-  display: flex;
-  gap: 15px;
-  margin-top: 15px;
-}
+.modal-buttons { display: flex; gap: 15px; margin-top: 15px; }
 
 .modal-buttons .action-btn,
 .modal-buttons .primary-btn {
@@ -1477,17 +1464,9 @@ html, body {
 }
 
 @media (max-width: 500px) {
-  .header h1 {
-    font-size: 1.4em;
-  }
-  .modal-buttons {
-    flex-direction: column;
-  }
+  .header h1 { font-size: 1.4em; }
+  .modal-buttons { flex-direction: column; }
 }
 
-.actions {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-}
+.actions { display: flex; gap: 4px; align-items: center; }
 </style>
