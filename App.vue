@@ -271,7 +271,7 @@ const handleLogin = async () => {
       showLoginModal.value = false
       authForm.value = { username: '', password: '' }
       alert('登入成功！已啟動雲端同步')
-      await syncWithServer()
+      await fullSyncWithServer()
     } else {
       alert('登入失敗，帳號或密碼錯誤')
     }
@@ -342,7 +342,7 @@ const loadTasks = async () => {
   })
 }
 
-// ─── syncWithServer：只做後台同步，絕對不呼叫 loadTasks ──────────
+// ─── syncWithServer：只做後台同步，不呼叫 loadTasks ──────────────
 const syncWithServer = async () => {
   if (!isLoggedIn.value || !isOnline.value) return
   try {
@@ -374,7 +374,6 @@ const syncWithServer = async () => {
     })
     if (res.ok) {
       lastSyncTime.value = Date.now()
-      // 後台同步成功後，更新 DB 中的伺服器資料（但不替換記憶體 tasks）
       const data = await res.json()
       const serverData = data.tasks.map(t => {
         const localT = localTasks.find(lt => lt.id === t.id)
@@ -392,7 +391,6 @@ const syncWithServer = async () => {
       })
       await db.tasks.clear()
       await db.tasks.bulkAdd(serverData)
-      // 注意：不呼叫 loadTasks()，記憶體狀態由操作函式直接維護
     } else if (res.status === 401) {
       alert('登入狀態已過期，請重新登入')
       logout()
@@ -402,7 +400,7 @@ const syncWithServer = async () => {
   }
 }
 
-// 首次登入後的完整同步（需要 loadTasks 拉取最新資料）
+// ─── fullSyncWithServer：首次登入完整同步（會呼叫 loadTasks）──────
 const fullSyncWithServer = async () => {
   if (!isLoggedIn.value || !isOnline.value) return
   try {
@@ -477,20 +475,16 @@ const getCurrentRestSeconds = (t) => {
   return (t.rest_elapsed || 0) + active
 }
 
-// ─── saveToDb：只存 DB，不觸發 syncWithServer（由呼叫端控制 sync 時機）──
 const saveToDb = async (t) => {
   t.updated_at = Date.now()
   await db.tasks.put(JSON.parse(JSON.stringify(t)))
 }
 
-// ─── saveToDbAndSync：存 DB 並後台 sync（不 loadTasks）──────────
 const saveToDbAndSync = async (t) => {
   await saveToDb(t)
   syncWithServer()
 }
 
-// ─── commitTaskState：計算並更新計時數據到記憶體（不存 DB）─────────
-// 純粹在記憶體中把 start_time 計算進去後停止
 const commitTaskState = (t, endTsOverride = null) => {
   if (!t.is_running || !t.start_time) return
   let endTs = endTsOverride || Date.now()
@@ -519,35 +513,42 @@ const commitTaskState = (t, endTsOverride = null) => {
   t.start_time = null
 }
 
-// ─── updateTaskLogs：計算並存 DB（仍保留供 handlePhaseComplete 使用）──
 const updateTaskLogs = async (t, endTsOverride = null) => {
   commitTaskState(t, endTsOverride)
   await saveToDb(t)
 }
 
-// ─── stopAllOthers：快照後批次停止，不觸發 loadTasks ─────────────
+// ─── stopAllOthers：停止其他所有任務，並強制退出休息狀態 ───────────
+// 語意：「其他任務全部完全停下來」，包含退出任何非 work 的 phase
 const stopAllOthers = async (excludeId) => {
-  // 快照當前 running 的任務，避免 reactive 陣列迭代中途變動
-  const toStop = tasks.value.filter(t => t.is_running && t.id !== excludeId)
+  const toStop = tasks.value.filter(t => t.id !== excludeId && !t.is_deleted)
   for (const t of toStop) {
-    commitTaskState(t)
-    await saveToDb(t)
+    if (t.is_running && t.start_time) {
+      commitTaskState(t)
+    }
+    // 不論原本 is_running 與否，只要 phase 不是 work 就強制退回
+    if (t.phase !== 'work') {
+      t.phase = 'work'
+      t.rest_elapsed = 0
+      t.is_running = false
+      t.start_time = null
+    }
+    // 只有狀態真的有變才需要寫 DB（減少不必要寫入）
+    if (!t.is_running || t.phase !== 'work') {
+      await saveToDb(t)
+    }
   }
 }
 
-// ─── enforceSingleRestTask：確保唯一休息方塊，批次操作 ─────────────
+// ─── enforceSingleRestTask：確保唯一休息方塊（已被 stopAllOthers 覆蓋，保留供 handlePhaseComplete 使用）──
 const enforceSingleRestTask = async (activeRestId) => {
-  // 快照，避免迭代中途 reactive 陣列變動
   const toReset = tasks.value.filter(t =>
     t.id !== activeRestId &&
     !t.is_deleted &&
     t.phase !== 'work'
   )
   for (const t of toReset) {
-    // 如果還在計時，先結算
-    if (t.is_running && t.start_time) {
-      commitTaskState(t)
-    }
+    if (t.is_running && t.start_time) commitTaskState(t)
     t.phase = 'work'
     t.rest_elapsed = 0
     t.is_running = false
@@ -556,7 +557,6 @@ const enforceSingleRestTask = async (activeRestId) => {
   }
 }
 
-// ─── handlePhaseComplete：倒數結束後的相位切換 ───────────────────
 let isHandlingPhase = false
 const handlePhaseComplete = async (t) => {
   if (isHandlingPhase || _operationLock) return
@@ -710,7 +710,7 @@ const saveQuickEdit = async () => {
   quickEditTask.value = null
 }
 
-// ─── toggleTimer：開始/暫停工作計時 ─────────────────────────────
+// ─── toggleTimer：開始/暫停計時 ──────────────────────────────────
 const toggleTimer = async (targetTask) => {
   await withLock(async () => {
     initAudio()
@@ -719,15 +719,18 @@ const toggleTimer = async (targetTask) => {
     localStorage.setItem('lastActiveTaskId', targetTask.id)
 
     if (targetTask.is_running) {
+      // 暫停：只結算自己
       commitTaskState(targetTask)
       await saveToDbAndSync(targetTask)
     } else {
+      // 啟動前：檢查是否已完成（倒數到底）
       if (targetTask.phase === 'work' && targetTask.mode !== 'stopwatch') {
         if ((targetTask.cycle_elapsed || 0) >= targetTask.target_time) return
       } else if (targetTask.phase !== 'work') {
         const tr = targetTask.phase === 'long_rest' ? targetTask.long_rest_time : targetTask.rest_time
         if ((targetTask.rest_elapsed || 0) >= tr) return
       }
+      // 停止並清除其他所有任務（含退出休息）
       await stopAllOthers(targetTask.id)
       targetTask.is_running = true
       targetTask.start_time = Date.now()
@@ -737,7 +740,7 @@ const toggleTimer = async (targetTask) => {
   })
 }
 
-// ─── toggleRest：切換休息狀態（核心修正點）──────────────────────
+// ─── toggleRest：切換休息狀態 ────────────────────────────────────
 const toggleRest = async (t) => {
   await withLock(async () => {
     initAudio()
@@ -747,13 +750,11 @@ const toggleRest = async (t) => {
 
     if (t.phase === 'work') {
       // ── 進入休息 ──
-      // 1. 先把自己的工作計時結算
+      // 1. 結算自己的工作計時
       if (t.is_running) commitTaskState(t)
-      // 2. 停止所有其他正在計時的任務
+      // 2. 停止並完全清除其他所有任務（含退出其他休息）
       await stopAllOthers(t.id)
-      // 3. 強制其他所有「休息中」任務退回 work（唯一性保證）
-      await enforceSingleRestTask(t.id)
-      // 4. 切換自己進入休息並開始計時
+      // 3. 切換進入休息並立即開始計時
       t.phase = 'rest'
       t.rest_elapsed = 0
       t.is_running = true
@@ -761,13 +762,15 @@ const toggleRest = async (t) => {
       now.value = t.start_time
       await saveToDbAndSync(t)
     } else {
-      // ── 退出休息（回到待命）──
-      // 只操作自己，不影響其他任務的計時狀態
+      // ── 手動退出休息 → 直接開始工作計時 ──
+      // 結算休息時間
       if (t.is_running) commitTaskState(t)
+      // 退回 work 並立即開始工作計時
       t.phase = 'work'
       t.rest_elapsed = 0
-      t.is_running = false
-      t.start_time = null
+      t.is_running = true           // ← 修正：退出休息後自動繼續計時
+      t.start_time = Date.now()     // ← 修正：直接開始工作 start_time
+      now.value = t.start_time
       await saveToDbAndSync(t)
     }
   })
