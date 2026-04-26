@@ -6,21 +6,55 @@
         設定方塊
       </h2>
       <div style="display:flex;flex-direction:column;gap:15px;margin-bottom:20px">
+        <!-- 方塊名稱 -->
         <label style="display:flex;flex-direction:column;gap:5px;font-weight:bold">
           方塊名稱：
-          <input type="text" :value="editForm.title" @input="update('title', $event.target.value)" class="custom-input" />
+          <input
+            type="text"
+            :value="editForm.title"
+            @input="update('title', $event.target.value)"
+            @keyup.enter="onTitleEnter"
+            class="custom-input"
+          />
         </label>
+
+        <!-- 工作時間（非正向計時）-->
         <label v-if="editingTask.mode !== 'stopwatch'" style="display:flex;flex-direction:column;gap:5px;font-weight:bold">
           工作時間 (分)：
-          <input type="number" :value="editForm.work" @input="update('work', Number($event.target.value))" class="custom-input" min="1" />
+          <input
+            type="number"
+            :value="editForm.work"
+            @input="update('work', Number($event.target.value))"
+            @keyup.enter="onWorkEnter"
+            class="custom-input"
+            min="1"
+          />
         </label>
+
+        <!-- 休息時間 -->
         <label style="display:flex;flex-direction:column;gap:5px;font-weight:bold">
           休息時間 (分)：
-          <input type="number" :value="editForm.rest" @input="update('rest', Number($event.target.value))" class="custom-input" min="1" />
+          <input
+            type="number"
+            :value="editForm.rest"
+            @input="update('rest', Number($event.target.value))"
+            @keyup.enter="onRestEnter"
+            class="custom-input"
+            min="1"
+          />
         </label>
+
+        <!-- 長休息時間（番茄鐘）-->
         <label v-if="editingTask.mode === 'pomodoro'" style="display:flex;flex-direction:column;gap:5px;font-weight:bold">
           長休息時間 (分)：
-          <input type="number" :value="editForm.longRest" @input="update('longRest', Number($event.target.value))" class="custom-input" min="1" />
+          <input
+            type="number"
+            :value="editForm.longRest"
+            @input="update('longRest', Number($event.target.value))"
+            @keyup.enter="emit('save')"
+            class="custom-input"
+            min="1"
+          />
         </label>
       </div>
       <div class="modal-buttons">
@@ -35,4 +69,37 @@
 const props = defineProps({ editingTask: Object, editForm: Object })
 const emit = defineEmits(['save', 'close', 'update:editForm'])
 const update = (key, val) => emit('update:editForm', { ...props.editForm, [key]: val })
+
+// Enter 導航邏輯
+const onTitleEnter = () => {
+  if (props.editingTask.mode === 'stopwatch') {
+    // 只有名稱和休息時間，跳到休息
+    const inputs = document.querySelectorAll('.modal-content .custom-input')
+    if (inputs.length > 1) inputs[1].focus()
+    else emit('save')
+  } else {
+    // 跳到工作時間
+    const inputs = document.querySelectorAll('.modal-content .custom-input')
+    if (inputs.length > 1) inputs[1].focus()
+    else emit('save')
+  }
+}
+
+const onWorkEnter = () => {
+  // 跳到休息時間（第3個 input）
+  const inputs = document.querySelectorAll('.modal-content .custom-input')
+  if (inputs.length > 2) inputs[2].focus()
+  else emit('save')
+}
+
+const onRestEnter = () => {
+  if (props.editingTask.mode === 'pomodoro') {
+    // 跳到長休
+    const inputs = document.querySelectorAll('.modal-content .custom-input')
+    if (inputs.length > 3) inputs[3].focus()
+    else emit('save')
+  } else {
+    emit('save')
+  }
+}
 </script>
