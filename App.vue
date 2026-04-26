@@ -462,6 +462,23 @@ const stopAllOthers = async (excludeId) => {
   }
 }
 
+// 唯一性收斂：強制將其他休息中的任務退回待命
+const enforceSingleRestTask = async (activeRestId) => {
+  for (const t of tasks.value) {
+    if (t.id === activeRestId || t.is_deleted) continue
+    if (t.phase !== 'work') {
+      if (t.is_running && t.start_time) {
+        await updateTaskLogs(t)
+      }
+      t.phase = 'work'
+      t.rest_elapsed = 0
+      t.is_running = false
+      t.start_time = null
+      await saveToDbAndSync(t)
+    }
+  }
+}
+
 let isHandlingPhase = false
 const handlePhaseComplete = async (t) => {
   if (isHandlingPhase) return
@@ -479,6 +496,10 @@ const handlePhaseComplete = async (t) => {
       msg += ' 專注完成！'
       t.cycle_elapsed = 0
       t.rest_elapsed = 0
+      
+      // 自動進入休息前，確保全局唯一休息方塊
+      await enforceSingleRestTask(t.id)
+
       if (t.mode === 'pomodoro') {
         t.pomodoro_cycle = (t.pomodoro_cycle || 0) + 1
         t.phase = t.pomodoro_cycle >= 4 ? 'long_rest' : 'rest'
@@ -643,29 +664,43 @@ const toggleTimer = async (targetTask) => {
   }
 }
 
+const isSwitchingRest = ref(false)
+
 const toggleRest = async (t) => {
-  initAudio()
-  if (notificationPermission.value === 'default') requestNotificationPermission()
-  lastActiveTaskId.value = t.id
-  localStorage.setItem('lastActiveTaskId', t.id)
+  if (isSwitchingRest.value) return
+  isSwitchingRest.value = true
 
-  if (t.is_running) {
-    await updateTaskLogs(t)
+  try {
+    initAudio()
+    if (notificationPermission.value === 'default') requestNotificationPermission()
+    lastActiveTaskId.value = t.id
+    localStorage.setItem('lastActiveTaskId', t.id)
+
+    if (t.is_running) {
+      await updateTaskLogs(t)
+    }
+
+    await stopAllOthers(t.id)
+
+    if (t.phase === 'work') {
+      // 確保手動進入休息前，清除其他休息狀態
+      await enforceSingleRestTask(t.id)
+      t.phase = 'rest'
+      t.rest_elapsed = 0
+      t.is_running = true
+      t.start_time = Date.now()
+      now.value = t.start_time
+      await saveToDbAndSync(t)
+    } else {
+      t.phase = 'work'
+      t.rest_elapsed = 0
+      t.is_running = false
+      t.start_time = null
+      await saveToDbAndSync(t)
+    }
+  } finally {
+    isSwitchingRest.value = false
   }
-  await stopAllOthers(t.id)
-
-  t.phase = t.phase === 'work' ? 'rest' : 'work'
-
-  if (t.phase === 'rest' || t.phase === 'long_rest') {
-    t.rest_elapsed = 0
-  }
-
-  setTimeout(async () => {
-    t.is_running = true
-    t.start_time = Date.now()
-    now.value = t.start_time
-    await saveToDbAndSync(t)
-  }, 50)
 }
 
 const resetAllTimes = async () => {
@@ -951,9 +986,7 @@ const triggerAlarm = (msg) => {
 }
 
 const applyTheme = () => {
-  // 加上這行，把 class 綁在 html 標籤上
   document.documentElement.classList.toggle('dark-theme', isDarkTheme.value)
-  // 這行保留給 body
   document.body.classList.toggle('dark-theme', isDarkTheme.value)
   localStorage.setItem('theme', isDarkTheme.value ? 'dark' : 'light')
 }
@@ -1358,7 +1391,6 @@ html, body {
   color: white;
 }
 
-/* 修正 TaskItem 右上角按鈕與底下的行為 */
 .icon-btn {
   background: transparent;
   border: none;
@@ -1381,7 +1413,6 @@ html, body {
   color: var(--danger-color);
 }
 
-/* 這裡不要用 display: block，SVG 會隨外層 flex 正常對齊 */
 .action-icon {
   width: 18px;
   height: 18px;
@@ -1459,17 +1490,4 @@ html, body {
   gap: 4px;
   align-items: center;
 }
-
-.icon-btn {
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  padding: 6px;
-  border-radius: 50%;
-  color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 </style>
