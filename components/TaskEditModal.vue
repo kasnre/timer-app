@@ -8,19 +8,49 @@
       <div style="display:flex;flex-direction:column;gap:15px;margin-bottom:20px">
         <label style="display:flex;flex-direction:column;gap:5px;font-weight:bold">
           方塊名稱：
-          <input type="text" :value="editForm.title" @input="update('title', $event.target.value)" class="custom-input" />
+          <input
+            type="text"
+            :value="editForm.title"
+            @input="update('title', $event.target.value)"
+            class="custom-input"
+            @keyup.enter="editingTask.mode !== 'stopwatch' ? focusRef(workRef) : focusRef(restRef)"
+          />
         </label>
         <label v-if="editingTask.mode !== 'stopwatch'" style="display:flex;flex-direction:column;gap:5px;font-weight:bold">
           工作時間 (分)：
-          <input type="number" :value="editForm.work" @input="update('work', Number($event.target.value))" class="custom-input" min="1" />
+          <input
+            ref="workRef"
+            type="number"
+            :value="editForm.work"
+            @input="update('work', Number($event.target.value))"
+            class="custom-input"
+            min="1"
+            @keyup.enter="focusRef(restRef)"
+          />
         </label>
         <label style="display:flex;flex-direction:column;gap:5px;font-weight:bold">
           休息時間 (分)：
-          <input type="number" :value="editForm.rest" @input="update('rest', Number($event.target.value))" class="custom-input" min="1" />
+          <input
+            ref="restRef"
+            type="number"
+            :value="editForm.rest"
+            @input="update('rest', Number($event.target.value))"
+            class="custom-input"
+            min="1"
+            @keyup.enter="editingTask.mode === 'pomodoro' ? focusRef(longRestRef) : emit('save')"
+          />
         </label>
         <label v-if="editingTask.mode === 'pomodoro'" style="display:flex;flex-direction:column;gap:5px;font-weight:bold">
           長休息時間 (分)：
-          <input type="number" :value="editForm.longRest" @input="update('longRest', Number($event.target.value))" class="custom-input" min="1" />
+          <input
+            ref="longRestRef"
+            type="number"
+            :value="editForm.longRest"
+            @input="update('longRest', Number($event.target.value))"
+            class="custom-input"
+            min="1"
+            @keyup.enter="emit('save')"
+          />
         </label>
       </div>
       <div class="modal-buttons">
@@ -32,7 +62,17 @@
 </template>
 
 <script setup>
+import { ref } from 'vue'
+
 const props = defineProps({ editingTask: Object, editForm: Object })
 const emit = defineEmits(['save', 'close', 'update:editForm'])
 const update = (key, val) => emit('update:editForm', { ...props.editForm, [key]: val })
+
+const workRef = ref(null)
+const restRef = ref(null)
+const longRestRef = ref(null)
+
+const focusRef = (r) => {
+  if (r && r.value) r.value.focus()
+}
 </script>
